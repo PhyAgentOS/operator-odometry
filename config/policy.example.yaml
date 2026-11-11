@@ -1,0 +1,12 @@
+ros_domain_id: 91
+deployment_root: /opt/navigation
+backend_executable: /opt/navigation/runtime/backend_install/lib/fast_lio/fastlio_mapping
+backend_params: /opt/navigation/config/fastlio.yaml
+odometry_topic: /lio/odometry
+cloud_topic: /lio/lidar
+imu_topic: /lio/imu
+time_mapping_id: set-after-clock-check
+startup_timeout_seconds: 30
+odometry_timeout_seconds: 3
+pose_output_hz: 5
+private_backend_tf: true

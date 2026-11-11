@@ -1,0 +1,31 @@
+# Interface wiring template: caller/sensor/etc. are externally supplied dynamic nodes.
+nodes:
+- id: caller
+  path: dynamic
+  outputs:
+  - policy_command
+  - finish
+- id: sensor
+  path: dynamic
+  outputs:
+  - point_cloud
+  - imu
+- id: odometry
+  path: odometry
+  args: --config ../config/policy.example.yaml
+  inputs:
+    tick: dora/timer/millis/20
+    policy_command:
+      source: caller/policy_command
+      queue_size: 32
+    finish: caller/finish
+    point_cloud:
+      source: sensor/point_cloud
+      queue_size: 8
+    imu:
+      source: sensor/imu
+      queue_size: 512
+  outputs:
+  - status
+  - odometry_pose
+  - base_pose
