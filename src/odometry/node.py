@@ -16,6 +16,9 @@ from odometry.process import OwnedProcess
 
 
 def run(config: dict) -> None:
+    from .backend import materialize
+
+    config = materialize(config)
     extrinsic_config = config.get("base_extrinsic", {})
     extrinsic = (
         BaseExtrinsic(extrinsic_config) if extrinsic_config.get("verified") is True else None
@@ -54,6 +57,59 @@ def run(config: dict) -> None:
 
         attach_planar_frames(
             ros, {**config["planar_frames"], "input_topic": config["odometry_topic"]}
+        )
+    from .snapshot import pose_value, write_snapshot
+
+    snapshot_dir = config.get("snapshot_dir")
+    scan_process = OwnedProcess()
+    stationary_since = None
+    if snapshot_dir:
+        from sensor_msgs.msg import LaserScan
+
+        def snapshot_odom(msg):
+            nonlocal stationary_since
+            vx, wz = msg.twist.twist.linear.x, msg.twist.twist.angular.z
+            now = time.monotonic()
+            stationary_since = (
+                (stationary_since or now) if abs(vx) < 0.03 and abs(wz) < 0.04 else None
+            )
+            write_snapshot(
+                snapshot_dir,
+                "odometry",
+                {
+                    "pose": pose_value(msg.pose.pose),
+                    "frame_id": msg.header.frame_id,
+                    "vx": vx,
+                    "wz": wz,
+                    "stationary_since": stationary_since,
+                },
+            )
+
+        def snapshot_scan(msg):
+            write_snapshot(
+                snapshot_dir,
+                "scan",
+                {
+                    "frame_id": msg.header.frame_id,
+                    "angle_min": msg.angle_min,
+                    "angle_increment": msg.angle_increment,
+                    "range_min": msg.range_min,
+                    "range_max": msg.range_max,
+                    "ranges": [float(x) if math.isfinite(x) else None for x in msg.ranges],
+                },
+            )
+
+        ros.create_subscription(
+            Odometry,
+            config.get("planar_frames", {}).get("output_topic", config["odometry_topic"]),
+            snapshot_odom,
+            20,
+        )
+        ros.create_subscription(
+            LaserScan,
+            config.get("scan_projection", {}).get("output_topic", "/scan"),
+            snapshot_scan,
+            QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT),
         )
     dora = Node()
     backend = OwnedProcess()
@@ -98,6 +154,7 @@ def run(config: dict) -> None:
 
     def fail(message):
         nonlocal state, pending_start
+        scan_process.stop()
         backend.stop()
         state = "error"
         if pending_start is not None:
@@ -252,9 +309,33 @@ def run(config: dict) -> None:
                         env=env,
                         log_path=root / "runtime/logs" / f"fastlio-{uuid.uuid4().hex}.log",
                     )
+                    if config.get("scan_projection"):
+                        import yaml
+
+                        scan = config["scan_projection"]
+                        target = Path(config["session_dir"]) / "scan.yaml"
+                        target.write_text(
+                            yaml.safe_dump({"/**": {"ros__parameters": scan["parameters"]}})
+                        )
+                        scan_process.start(
+                            [
+                                scan["executable"],
+                                "--ros-args",
+                                "--params-file",
+                                str(target),
+                                "-r",
+                                "cloud_in:=" + scan["input_topic"],
+                                "-r",
+                                "scan:=" + scan["output_topic"],
+                            ],
+                            cwd=root,
+                            env=env,
+                            log_path=Path(config["session_dir"]) / "scan.log",
+                        )
                     emit(command, "running", "backend starting; awaiting valid odometry")
                 elif command.command == "stop":
                     emit(command, "accepted")
+                    scan_process.stop()
                     backend.stop()
                     if pending_start is not None:
                         emit(pending_start, "error", "stopped before odometry became ready")
@@ -267,6 +348,12 @@ def run(config: dict) -> None:
             for _ in range(8):
                 rclpy.spin_once(ros, timeout_sec=0)
             now = time.monotonic()
+            if (
+                state in ("starting", "running")
+                and config.get("scan_projection")
+                and scan_process.poll() is not None
+            ):
+                fail("scan projection process exited")
             if state in ("starting", "running") and backend.poll() is not None:
                 fail("FAST-LIO process exited unexpectedly")
             elif state == "starting" and now > start_deadline:
@@ -279,6 +366,7 @@ def run(config: dict) -> None:
         fail(str(exc))
         raise
     finally:
+        scan_process.stop()
         backend.stop()
         ros.destroy_node()
         if rclpy.ok():

@@ -59,6 +59,7 @@ def load_config(path: str | Path | None = None) -> dict:
             "pcd_path",
             "launch_file",
             "pose_cache_file",
+            "snapshot_dir",
         }:
             if not isinstance(item, str) or not item.strip():
                 raise ValueError(f"{key} must be a path")
