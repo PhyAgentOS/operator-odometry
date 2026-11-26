@@ -6,7 +6,7 @@ Converts Forge point cloud and IMU streams into FAST-LIO inputs and publishes co
 
 ## Runtime
 
-- Node `0.3.0`, Forge 2, Dora CLI/Python bindings 1.0.1, Forge Msgs/Common 2.1.0; exact build dependencies are in `uv.lock`.
+- Node `0.3.1`, Forge 2, Dora CLI/Python bindings 1.0.1, Forge Msgs/Common 2.1.0; exact build dependencies are in `uv.lock`.
 - Ubuntu 24.04 x86_64, Python 3.12 ABI, external ROS 2 Jazzy and required algorithm/message overlays.
 - Source the ROS/overlay setup before launch. `odometry --check-runtime` validates imports and generated wire types without opening hardware.
 - The `directory_tar_gz` artifact contains the complete `odometry/` runtime; execute `odometry/odometry`. Do not move its executable away from its libraries.
@@ -18,7 +18,7 @@ Explicit use_sim_time enables a monotonic nanosecond clock input and ROS /clock 
 
 Optional capabilities remain disabled when unconfigured. The Node owns only its own child processes; it does not modify vendor projects or control unrelated applications. Snapshots are observations, not a control API; consumers must verify freshness.
 
-`use_sim_time: true` explicitly selects simulation time; the default remains host ROS time. Snapshot writes use an owned same-directory temporary file and atomic replacement.
+`use_sim_time: true` explicitly selects simulation time; the default remains host ROS time. Snapshot writes use an owned same-directory temporary file and atomic replacement. A dedicated worker retains only the latest pending scan and odometry observation, so filesystem stalls do not block sensor forwarding or ROS callbacks. The receive timestamp is fixed before queuing; delayed or failed writes remain stale to consumers. Writer failures and bounded shutdown timeouts are reported on stderr.
 
 ## Development and packaging
 
