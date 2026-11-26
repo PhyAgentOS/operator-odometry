@@ -19,6 +19,8 @@ def run(config: dict) -> None:
     from .backend import materialize
 
     config = materialize(config)
+    if config.get('primary_origin_scan') and config.get('multi_origin_scan'):
+        raise ValueError('choose one explicit physical mapping scan mode')
     extrinsic_config = config.get("base_extrinsic", {})
     extrinsic = (
         BaseExtrinsic(extrinsic_config) if extrinsic_config.get("verified") is True else None
@@ -31,11 +33,28 @@ def run(config: dict) -> None:
             raise ValueError(f"backend paths must be existing files in our deployment: {p}")
     import rclpy
     from nav_msgs.msg import Odometry
+    from rclpy.parameter import Parameter
     from rclpy.qos import QoSProfile, ReliabilityPolicy
 
     domain = int(config["ros_domain_id"])
     rclpy.init(domain_id=domain)
-    ros = rclpy.create_node("odometry")
+    simulation_time = config.get("use_sim_time", False)
+    if not isinstance(simulation_time, bool):
+        raise ValueError("use_sim_time must be a boolean")
+    ros = rclpy.create_node(
+        "odometry",
+        parameter_overrides=[Parameter("use_sim_time", value=simulation_time)],
+    )
+    clock_pub = None
+    if simulation_time:
+        from rosgraph_msgs.msg import Clock
+
+        from .simulation_clock import SimulationClock
+
+        simulation_clock = SimulationClock()
+        clock_pub = ros.create_publisher(
+            Clock, "/clock", QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+        )
     from livox_ros_driver2.msg import CustomMsg
     from sensor_msgs.msg import Imu as RosImu
 
@@ -58,6 +77,14 @@ def run(config: dict) -> None:
         attach_planar_frames(
             ros, {**config["planar_frames"], "input_topic": config["odometry_topic"]}
         )
+    _primary_scan=None
+    if config.get('primary_origin_scan'):
+        from .primary_scan import attach_primary_scan
+        _primary_scan=attach_primary_scan(ros,config['primary_origin_scan'])
+    _origin_mux=None
+    if config.get('multi_origin_scan'):
+        from .primary_scan import attach_origin_scan_mux
+        _origin_mux=attach_origin_scan_mux(ros,config['multi_origin_scan'])
     from .snapshot import pose_value, write_snapshot
 
     snapshot_dir = config.get("snapshot_dir")
@@ -238,11 +265,26 @@ def run(config: dict) -> None:
                 continue
             if event["id"] == "finish":
                 break
+            if event["id"] == "clock":
+                if clock_pub is None:
+                    raise ValueError("clock input requires explicit use_sim_time configuration")
+                samples = event["value"].to_pylist()
+                if len(samples) != 1:
+                    raise ValueError("clock input requires one nanosecond sample")
+                if simulation_clock.observe(samples[0]):
+                    clock_message = Clock()
+                    clock_message.clock.sec, clock_message.clock.nanosec = divmod(
+                        simulation_clock.last_ns, 10**9
+                    )
+                    clock_pub.publish(clock_message)
             if event["id"] in ("point_cloud", "imu"):
                 metadata = event["metadata"]
                 context = SampleContext.from_metadata(metadata)
                 clock_guard.observe(event["id"], context)
                 if event["id"] == "point_cloud":
+                    if ((config.get('primary_origin_scan') or config.get('multi_origin_scan')) and
+                            metadata.get('reflectivity_model')!='stream_identity_100_plus_index'):
+                        raise ValueError('primary-origin mapping requires explicitly labeled real simulation streams')
                     cloud_pub.publish(
                         cloud_to_serialized_ros(
                             decode_livox(PointCloudBuffer.from_arrow(event["value"]), metadata)
