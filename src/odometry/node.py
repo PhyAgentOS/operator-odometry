@@ -85,9 +85,10 @@ def run(config: dict) -> None:
     if config.get('multi_origin_scan'):
         from .primary_scan import attach_origin_scan_mux
         _origin_mux=attach_origin_scan_mux(ros,config['multi_origin_scan'])
-    from .snapshot import pose_value, write_snapshot
+    from .snapshot import LatestSnapshotWriter, pose_value
 
     snapshot_dir = config.get("snapshot_dir")
+    snapshot_writer = LatestSnapshotWriter(snapshot_dir, ("odometry", "scan"))
     scan_process = OwnedProcess()
     stationary_since = None
     if snapshot_dir:
@@ -100,8 +101,7 @@ def run(config: dict) -> None:
             stationary_since = (
                 (stationary_since or now) if abs(vx) < 0.03 and abs(wz) < 0.04 else None
             )
-            write_snapshot(
-                snapshot_dir,
+            snapshot_writer.submit(
                 "odometry",
                 {
                     "pose": pose_value(msg.pose.pose),
@@ -113,8 +113,7 @@ def run(config: dict) -> None:
             )
 
         def snapshot_scan(msg):
-            write_snapshot(
-                snapshot_dir,
+            snapshot_writer.submit(
                 "scan",
                 {
                     "frame_id": msg.header.frame_id,
@@ -410,6 +409,7 @@ def run(config: dict) -> None:
     finally:
         scan_process.stop()
         backend.stop()
+        snapshot_writer.close()
         ros.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
